@@ -1,0 +1,33 @@
+services:
+  fe-nginx:
+    container_name: fe-nginx-ktb
+    image: 925663248026.dkr.ecr.ap-northeast-2.amazonaws.com/ecr-ktb-frontend:latest
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    environment:
+      # - API_BASE_URL=http://alb-ktb-1780145382.ap-northeast-2.elb.amazonaws.com/api
+      - API_BASE_URL=http://www.shiftknu.com/api
+    networks:
+      - app_net
+
+  portainer:
+    container_name: portainer-server-frontend-ktb
+    image: 925663248026.dkr.ecr.ap-northeast-2.amazonaws.com/potainer-server-ecr-frontend-ktb:2.39.4
+    command: -H unix:///var/run/docker.sock
+    restart: always
+    ports:
+      - "9443:9443" # 웹 UI
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - portainer_data:/data
+    networks:
+      - management_net
+
+networks:
+  app_net:
+  management_net:
+
+volumes:
+  portainer_data:
+    external: true

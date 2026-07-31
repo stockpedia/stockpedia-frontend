@@ -1,0 +1,32 @@
+on:
+  pull_request:
+    branches:
+      - dev
+
+permissions:
+  contents: read
+
+concurrency:
+  group: frontend-ci-pull-request-ktb-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  syntax-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Node 설정
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: JS 문법 검사
+        run: |
+          set -e
+          find . -name "*.js" -not -path "./node_modules/*" | while read f; do
+            echo "check: $f"
+            node --check "$f"
+          done
