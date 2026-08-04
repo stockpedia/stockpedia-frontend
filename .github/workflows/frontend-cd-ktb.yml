@@ -1,120 +1,48 @@
-# on:
-#   push:
-#     branches:
-#       - main
+name: 프론트엔드 S3 배포
 
-# permissions:
-#   contents: read
-#   id-token: write
+on:
+  push:
+    branches:
+      - main
 
-# concurrency:
-#   group: frontend-cd-${{ github.ref }}
-#   cancel-in-progress: false
+permissions:
+  contents: read
+  id-token: write
 
-# env:
-#   AWS_REGION: ${{ secrets.AWS_REGION }}
+concurrency:
+  group: frontend-cd-${{ github.ref }}
+  cancel-in-progress: false
 
-# jobs:
-#   deploy:
-#     environment: frontend-production
-#     runs-on: ubuntu-latest
-#     timeout-minutes: 15
-#     steps:
-#       - name: 코드 체크아웃
-#         uses: actions/checkout@v4
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  S3_BUCKET: frontend-bucket-ktb
+  CF_ID: ${{ secrets.CF_DISTRIBUTION_ID }}
 
-#       - name: AWS 자격증명 설정
-#         uses: aws-actions/configure-aws-credentials@v4
-#         with:
-#           aws-region: ${{ env.AWS_REGION }}
-#           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+jobs:
+  deploy:
+    environment: frontend-production
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v4
 
-#       - name: ECR 로그인
-#         id: login
-#         uses: aws-actions/amazon-ecr-login@v2
+      - name: AWS 자격증명 설정
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
 
-#       - name: Buildx 설정
-#         uses: docker/setup-buildx-action@v3
+      - name: S3 동기화
+        run: |
+          for d in html css js api component utils public; do
+            aws s3 sync "$d" "s3://${S3_BUCKET}/$d" --delete
+          done
+          aws s3 cp config.js "s3://${S3_BUCKET}/config.js" --cache-control "no-cache"
 
-#       - name: 이미지 빌드 및 ECR 푸시
-#         uses: docker/build-push-action@v6
-#         with:
-#           platforms: linux/amd64
-#           context: .
-#           file: ./Dockerfile
-#           push: true
-#           tags: |
-#             ${{ steps.login.outputs.registry }}/ecr-ktb-frontend:latest
-#             ${{ steps.login.outputs.registry }}/ecr-ktb-frontend:${{ github.sha }}
-#           cache-from: type=gha
-#           cache-to: type=gha,mode=max
-
-#       - name: 프론트 EC2 찾기
-#         id: instance
-#         run: |
-#           INSTANCE_ID=$(aws ec2 describe-instances \
-#             --filters \
-#               "Name=tag:Role,Values=frontend" \
-#               "Name=tag:Environment,Values=prod" \
-#               "Name=instance-state-name,Values=running" \
-#             --query "Reservations[].Instances[].InstanceId" \
-#             --output text)
-#           if [ -z "$INSTANCE_ID" ]; then
-#             echo "Frontend instance not found."
-#             exit 1
-#           fi
-#           echo "INSTANCE_ID=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
-
-#       - name: SSM으로 배포
-#         id: deploy
-#         run: |
-#           COMPOSE_B64=$(base64 -w 0 docker-compose.yml)
-#           jq -n \
-#             --arg compose "$COMPOSE_B64" \
-#             --arg registry "${{ steps.login.outputs.registry }}" \
-#             --arg region "${{ env.AWS_REGION }}" \
-#             '{
-#               commands: [
-#                 "set -e",
-#                 "mkdir -p /home/ubuntu/ktb-frontend",
-#                 "cd /home/ubuntu/ktb-frontend",
-#                 ("printf %s " + ($compose | @sh) + " | base64 -d > docker-compose.yml"),
-#                 ("aws ecr get-login-password --region " + $region + " | docker login --username AWS --password-stdin " + $registry),
-#                 "docker compose pull",
-#                 "docker compose up -d",
-#                 "docker image prune -af --filter until=72h",
-#                 "curl --fail http://localhost:80/"
-#               ]
-#             }' > ssm-parameters.json
-#           COMMAND_ID=$(aws ssm send-command \
-#             --instance-ids "${{ steps.instance.outputs.INSTANCE_ID }}" \
-#             --document-name "AWS-RunShellScript" \
-#             --parameters file://ssm-parameters.json \
-#             --region "$AWS_REGION" \
-#             --query "Command.CommandId" --output text)
-#           echo "COMMAND_ID=$COMMAND_ID" >> "$GITHUB_OUTPUT"
-
-#       - name: SSM 명령 대기
-#         run: |
-#           aws ssm wait command-executed \
-#             --command-id "${{ steps.deploy.outputs.COMMAND_ID }}" \
-#             --instance-id "${{ steps.instance.outputs.INSTANCE_ID }}"
-
-#       - name: 배포 결과 확인
-#         run: |
-#           STATUS=$(aws ssm get-command-invocation \
-#             --command-id "${{ steps.deploy.outputs.COMMAND_ID }}" \
-#             --instance-id "${{ steps.instance.outputs.INSTANCE_ID }}" \
-#             --query "Status" \
-#             --output text)
-#           echo "Deployment Status : $STATUS"
-#           if [ "$STATUS" != "Success" ]; then
-#             echo "===== SSM STDERR ====="
-#             aws ssm get-command-invocation \
-#               --command-id "${{ steps.deploy.outputs.COMMAND_ID }}" \
-#               --instance-id "${{ steps.instance.outputs.INSTANCE_ID }}" \
-#               --query "StandardErrorContent" \
-#               --output text
-#             exit 1
-#           fi
-#           echo "Deployment Success"
+      - name: CloudFront 캐시 무효화
+        if: ${{ env.CF_ID != '' }}
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id "$CF_ID" \
+            --paths "/*"
